@@ -16,8 +16,8 @@ import unicodedata
 import string
 import re
 import multiprocessing
-
-
+import matplotlib.ticker as ticker
+import matplotlib.pyplot as plt
 import logging
 logging.basicConfig(level=logging.INFO,
                      format='%(levelname)-5s @ %(asctime)s:\n\t %(message)s \n',
@@ -279,6 +279,8 @@ def main():
         parser.add_argument('--ignore_deletions',help='Ignore deletions events for the quantification and visualization',action='store_true')  
         parser.add_argument('--needle_options_string',type=str,help='Override options for the Needle aligner',default=' -gapopen=10 -gapextend=0.5  -awidth3=5000')
         parser.add_argument('--keep_intermediate',help='Keep all the  intermediate files',action='store_true')
+        parser.add_argument('--realign',help='Realign needle alignment if cutsite contains repetitive regions, such that indels are observed closer to cutsite',action='store_true')
+
         parser.add_argument('--dump',help='Dump numpy arrays and pandas dataframes to file for debugging purposes',action='store_true')
         parser.add_argument('--save_also_png',help='Save also .png images additionally to .pdf files',action='store_true')
         
@@ -295,7 +297,7 @@ def main():
                                   'needle_options_string',
                                   'keep_intermediate',
                                   'dump',
-                                  'save_also_png','hide_mutations_outside_window_NHEJ','n_processes',]
+                                  'save_also_png','hide_mutations_outside_window_NHEJ','n_processes','realign']
     
         
         def propagate_options(cmd,options,args):
@@ -845,12 +847,15 @@ def main():
     
         #write a file with basic quantification info for each sample
         def check_output_folder(output_folder):
-            quantification_file=os.path.join(output_folder,'Quantification_of_editing_frequency.txt')  
-    
+            quantification_file=os.path.join(output_folder,'Quantification_of_editing_frequency.txt')
+            indel_file = os.path.join(output_folder,'indel_histogram.txt')
+            quantfile = None
+            indelfile = None
             if os.path.exists(quantification_file):
-                return quantification_file
-            else:
-                return None
+                quantfile=quantification_file
+            if os.path.exists(indel_file):
+                indelfile=indel_file
+            return quantfile,indelfile
     
         def parse_quantification(quantification_file):
             with open(quantification_file) as infile:
@@ -862,9 +867,9 @@ def main():
                 infile.readline()
                 N_TOTAL=float(re.findall("Total Aligned:(\d+) reads",infile.readline())[0])
                 return N_UNMODIFIED,N_MODIFIED,N_REPAIRED,N_MIXED_HDR_NHEJ,N_TOTAL
-    
+                
         quantification_summary=[]
-    
+        
         if RUNNING_MODE=='ONLY_AMPLICONS' or RUNNING_MODE=='AMPLICONS_AND_GENOME':
             df_final_data=df_template
         else:
@@ -878,7 +883,7 @@ def main():
                     folder_name='CRISPResso_on_REGION_%s_%d_%d' %(row.chr_id,row.bpstart,row.bpend )
     
                 quantification_file=check_output_folder(_jp(folder_name))
-    
+
                 if quantification_file:
                     N_UNMODIFIED,N_MODIFIED,N_REPAIRED,N_MIXED_HDR_NHEJ,N_TOTAL=parse_quantification(quantification_file)
                     quantification_summary.append([idx,N_UNMODIFIED/N_TOTAL*100,N_MODIFIED/N_TOTAL*100,N_REPAIRED/N_TOTAL*100,N_MIXED_HDR_NHEJ/N_TOTAL*100,N_TOTAL,row.n_reads])
@@ -886,10 +891,8 @@ def main():
                     quantification_summary.append([idx,np.nan,np.nan,np.nan,np.nan,np.nan,row.n_reads])
                     warn('Skipping the folder %s, not enough reads or empty folder.'% folder_name)
     
-    
         df_summary_quantification=pd.DataFrame(quantification_summary,columns=['Name','Unmodified%','NHEJ%','HDR%', 'Mixed_HDR-NHEJ%','Reads_aligned','Reads_total'])        
-        df_summary_quantification.fillna('NA').to_csv(_jp('SAMPLES_QUANTIFICATION_SUMMARY.txt'),sep='\t',index=None)        
-                    
+        df_summary_quantification.fillna('NA').to_csv(_jp('SAMPLES_QUANTIFICATION_SUMMARY.txt'),sep='\t',index=None)
         #cleaning up
         if not args.keep_intermediate:
              info('Removing Intermediate files...')

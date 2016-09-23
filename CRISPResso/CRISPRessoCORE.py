@@ -198,7 +198,7 @@ matplotlib.rc('font', **font)
 matplotlib.use('Agg')
 
 plt=check_library('pylab')
-
+plt.style.use('ggplot')
 
 
 pd=check_library('pandas')
@@ -256,6 +256,52 @@ class NoReadsAfterQualityFiltering(Exception):
 
 #########################################
 
+def realign(row,ref_last=0):
+    ref = row.ref_seq
+    seq = row.align_seq
+    if ref_last:
+        ref = row.align_seq
+        seq = row.ref_seq
+    ref_pos = row.ref_positions
+    aln_str = row.align_str
+    cutsites = [np.nonzero(ref_pos==idx)[0][0] for idx in CUTSITES]
+    # find locations of deletions
+    dels = [match.span() for match in re.finditer('-+',seq)]
+    seq_list = list(seq)
+    aln_str = list(aln_str)
+    for cutsite in cutsites:
+        # filter out deletion far away from cutsite
+        cdist,start,end = float("inf"),None,None
+        for starts,ends in dels:
+            dist = min(abs(starts-cutsite),abs(ends-cutsite-1))
+            if dist < cdist and dist < 30:
+                cdist,start,end = dist,starts,ends-1
+                
+        # skip if there are no (relevant) deletions 
+        if not start:
+            continue
+        # if possible try to move indel immediately 5' of cutsite
+        if start > cutsite:
+            while seq_list[start-1] == ref[end] and end >= cutsite:
+                seq_list[end],seq_list[start-1]  = seq_list[start-1],seq_list[end]
+                aln_str[end],aln_str[start-1] = aln_str[start-1],aln_str[end]    
+                end -= 1
+                start -= 1
+            
+        elif end < cutsite:
+            while ref[start] == seq_list[end+1] and end  < cutsite:
+                seq_list[start],seq_list[end+1] = seq_list[end+1],seq_list[start]
+                aln_str[start],aln_str[end+1] = aln_str[end+1],aln_str[start]
+                start += 1
+                end += 1
+    new_seq = ''.join(seq_list)
+    row['align_str'] = ''.join(aln_str)
+    if ref_last:
+        row['ref_seq'] = new_seq
+    else:
+        row['align_seq'] = new_seq
+        
+    return row
 
 def process_df_chunk(df_needle_alignment_chunk):
      
@@ -549,7 +595,7 @@ def main():
              global len_amplicon
              global exon_positions
              global splicing_positions
-             
+             global CUTSITES
              parser = argparse.ArgumentParser(description='CRISPResso Parameters',formatter_class=argparse.ArgumentDefaultsHelpFormatter)
              parser.add_argument('-r1','--fastq_r1', type=str,  help='First fastq file', required=True,default='Fastq filename' )
              parser.add_argument('-r2','--fastq_r2', type=str,  help='Second fastq file for paired end reads',default='')
@@ -578,6 +624,7 @@ def main():
              parser.add_argument('--ignore_insertions',help='Ignore insertions events for the quantification and visualization',action='store_true')  
              parser.add_argument('--ignore_deletions',help='Ignore deletions events for the quantification and visualization',action='store_true')  
              parser.add_argument('--needle_options_string',type=str,help='Override options for the Needle aligner',default='-gapopen=10 -gapextend=0.5  -awidth3=5000')
+             parser.add_argument('--realign',help='Realign needle alignment if cutsite contains repetitive regions, such that indels are observed closer to cutsite',action='store_true')
              parser.add_argument('--keep_intermediate',help='Keep all the  intermediate files',action='store_true')
              parser.add_argument('--dump',help='Dump numpy arrays and pandas dataframes to file for debugging purposes',action='store_true')
              parser.add_argument('--save_also_png',help='Save also .png images additionally to .pdf files',action='store_true')
@@ -621,6 +668,7 @@ def main():
                      if not cut_points:
                          raise SgRNASequenceException('The guide sequence/s provided is(are) not present in the amplicon sequence! \n\nPlease check your input!')
                      else:
+                         CUTSITES = cut_points
                          info('Cut Points from guide seq:%s' % cut_points)
              else:
                      cut_points=[]
@@ -1148,7 +1196,12 @@ def main():
     
              #compute positions relative to alignmnet
              df_needle_alignment['ref_positions']=df_needle_alignment['ref_seq'].apply(compute_ref_positions)
-    
+             if args.realign and args.guide_seq:
+                 if not args.ignore_insertions:
+                     df_needle_alignment = df_needle_alignment.apply(realign,axis=1,args=(1,))
+                     df_needle_alignment['ref_positions']=df_needle_alignment['ref_seq'].apply(compute_ref_positions)
+                 if not args.ignore_deletions:
+                     df_needle_alignment = df_needle_alignment.apply(realign,axis=1)
              
              #INITIALIZATIONS            
              re_find_indels=re.compile("(-*-)")
