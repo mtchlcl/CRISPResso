@@ -280,7 +280,7 @@ def main():
         parser.add_argument('--needle_options_string',type=str,help='Override options for the Needle aligner',default=' -gapopen=10 -gapextend=0.5  -awidth3=5000')
         parser.add_argument('--keep_intermediate',help='Keep all the  intermediate files',action='store_true')
         parser.add_argument('--realign',help='Realign needle alignment if cutsite contains repetitive regions, such that indels are observed closer to cutsite',action='store_true')
-
+        parser.add_argument('--vmax',type=float,nargs=3,default=[None,None,None],help='Max value for colorbar of heatmaps. List 3 floats separated by spaces.(i.e. 0.5 0.05 0.1). The first is max for deletion heatmap, second insertions heatmap, and third substitutions heatmap. \'0\' in place of a float signifies use auto vmaxes.')
         parser.add_argument('--dump',help='Dump numpy arrays and pandas dataframes to file for debugging purposes',action='store_true')
         parser.add_argument('--save_also_png',help='Save also .png images additionally to .pdf files',action='store_true')
         
@@ -848,14 +848,14 @@ def main():
         #write a file with basic quantification info for each sample
         def check_output_folder(output_folder):
             quantification_file=os.path.join(output_folder,'Quantification_of_editing_frequency.txt')
-            indel_file = os.path.join(output_folder,'indel_histogram.txt')
+            allele_file = os.path.join(output_folder,'Alleles_frequency_table.txt')
             quantfile = None
-            indelfile = None
+            allelefile = None
             if os.path.exists(quantification_file):
                 quantfile=quantification_file
-            if os.path.exists(indel_file):
-                indelfile=indel_file
-            return quantfile,indelfile
+            if os.path.exists(allele_file):
+                allelefile=allele_file
+            return quantfile,allelefile
     
         def parse_quantification(quantification_file):
             with open(quantification_file) as infile:
@@ -869,7 +869,29 @@ def main():
                 return N_UNMODIFIED,N_MODIFIED,N_REPAIRED,N_MIXED_HDR_NHEJ,N_TOTAL
                 
         quantification_summary=[]
-        
+        indel_summary = [pd.DataFrame()]*3 # deletions,insertions,substitutions
+        def parse_alleles(allele_file,target):
+            df_alleles = pd.read_table(allele_file)
+            def createDF(indel, indel_name):
+                idxs = list(indel.index.values)
+                min_sz,max_sz = int(min(idxs[0],0)),int(max(idxs[-1],0))
+                idxs = set(idxs)
+                total_reads = int(indel['#Reads'].loc[min_sz]/(indel['%Reads'].loc[min_sz]/100.))
+                tgt_reads = target + "\n(%d Reads)" % total_reads
+                data = [[tgt_reads,sz,float(indel['%Reads'].loc[sz])/100] if sz in idxs else [tgt_reads,sz,0] \
+                        for sz in range(min_sz,max_sz + 1)]
+                df_indel = pd.DataFrame(data,columns=['Target',indel_name,'Frequency'])
+                df_indel = df_indel.drop(df_indel.index[[0]])
+                if df_indel.empty:
+                    df_indel.set_value(1,'Target',tgt_reads)
+                    df_indel.set_value(1,indel_name,1)
+                    df_indel[indel_name] = df_indel[indel_name].astype(int)
+                return df_indel
+            dels = createDF(df_alleles.groupby('n_deleted').sum(),'Deletions')
+            ins = createDF(df_alleles.groupby('n_inserted').sum(),'Insertions')
+            subs = createDF(df_alleles.groupby('n_mutated').sum(),'Substitutions')
+            return [dels,ins,subs]
+                
         if RUNNING_MODE=='ONLY_AMPLICONS' or RUNNING_MODE=='AMPLICONS_AND_GENOME':
             df_final_data=df_template
         else:
@@ -882,7 +904,7 @@ def main():
                 else:
                     folder_name='CRISPResso_on_REGION_%s_%d_%d' %(row.chr_id,row.bpstart,row.bpend )
     
-                quantification_file=check_output_folder(_jp(folder_name))
+                quantification_file,allele_file=check_output_folder(_jp(folder_name))
 
                 if quantification_file:
                     N_UNMODIFIED,N_MODIFIED,N_REPAIRED,N_MIXED_HDR_NHEJ,N_TOTAL=parse_quantification(quantification_file)
@@ -890,7 +912,44 @@ def main():
                 else:
                     quantification_summary.append([idx,np.nan,np.nan,np.nan,np.nan,np.nan,row.n_reads])
                     warn('Skipping the folder %s, not enough reads or empty folder.'% folder_name)
-    
+                if allele_file:
+                    indels = parse_alleles(allele_file,idx)
+                    for i in range(len(indels)):
+                        indel_summary[i] = indel_summary[i].append(indels[i])
+        if not indel_summary[0].empty:
+            # draw heatmaps
+            plt.style.use('ggplot')
+            ignore_indels = [args.ignore_deletions,args.ignore_insertions,\
+                             args.ignore_substitutions]
+            for i in range(len(indel_summary)):
+                if not ignore_indels[i]:
+                    indel_name = list(indel_summary[i].columns)[1]
+                    indel_summary[i] = indel_summary[i].pivot(indel_name,"Target","Frequency")
+                    indel_summary[i] = indel_summary[i].fillna(0.)
+                    fig = plt.figure(i)
+                    indels = indel_summary[i]
+                    vmax = int(args.vmax[i])
+                    if not vmax:
+                        vmax = None
+                    ax = plt.pcolormesh(indels.values,vmin=0,vmax=vmax,cmap="Reds")
+                    plt.ylabel(indels.index.name)
+                    plt.xlabel('Target')
+                    plt.title(indels.index.name+" Profile")
+                    plt.xticks(np.arange(0.5,len(indels.columns),1),indels.columns)
+                    plt.ylim([0,max(indels.index.values)])
+                    plt.yticks(np.arange(0.5,len(indels.index),1),indels.index)
+                    mi,ma = ax.get_clim()
+                    if ma < .1:
+                        for y in range (indels.values.shape[0]):
+                            for x in range(indels.values.shape[1]):
+                                plt.text(x + 0.5, y + 0.5, '{:.3%}'.format(indels.values[y,x]),
+                                         horizontalalignment='center',
+                                         verticalalignment='center')
+
+                    cbar = fig.colorbar(ax,format=ticker.FuncFormatter(lambda x,_:'{:.2%}'.format(x)))
+                    cbar.set_label("Percent of Reads")
+                    plt.savefig(_jp('%s_heatmap.pdf' % indels.index.name))
+            
         df_summary_quantification=pd.DataFrame(quantification_summary,columns=['Name','Unmodified%','NHEJ%','HDR%', 'Mixed_HDR-NHEJ%','Reads_aligned','Reads_total'])        
         df_summary_quantification.fillna('NA').to_csv(_jp('SAMPLES_QUANTIFICATION_SUMMARY.txt'),sep='\t',index=None)
         #cleaning up
