@@ -282,14 +282,14 @@ def realign(row,ref_last=0):
             continue
         # if possible try to move indel immediately 5' of cutsite
         if start > cutsite:
-            while seq_list[start-1] == ref[end] and end >= cutsite:
+            while seq_list[start-1] == ref[end] and end >= cutsite -1:
                 seq_list[end],seq_list[start-1]  = seq_list[start-1],seq_list[end]
                 aln_str[end],aln_str[start-1] = aln_str[start-1],aln_str[end]    
                 end -= 1
                 start -= 1
             
         elif end < cutsite:
-            while ref[start] == seq_list[end+1] and end  < cutsite:
+            while ref[start] == seq_list[end+1] and end < cutsite -1:
                 seq_list[start],seq_list[end+1] = seq_list[end+1],seq_list[start]
                 aln_str[start],aln_str[end+1] = aln_str[end+1],aln_str[start]
                 start += 1
