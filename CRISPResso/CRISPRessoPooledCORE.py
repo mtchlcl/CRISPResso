@@ -16,7 +16,9 @@ import unicodedata
 import string
 import re
 import multiprocessing
+import matplotlib
 import matplotlib.ticker as ticker
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import logging
 logging.basicConfig(level=logging.INFO,
@@ -255,7 +257,7 @@ def main():
         please select as table "knowGene", as output format "all fields from selected table" and as file returned "gzip compressed"', default='')
         parser.add_argument('-p','--n_processes',type=int, help='Specify the number of processes to use for the quantification.\
         Please use with caution since increasing this parameter will increase significantly the memory required to run CRISPResso.',default=1)        
-        parser.add_argument('--botwie2_options_string', type=str, help='Override options for the Bowtie2 alignment command',default=' -k 1 --end-to-end -N 0 --np 0 ')
+        parser.add_argument('--bowtie2_options_string', type=str, help='Override options for the Bowtie2 alignment command',default=' -k 1 --end-to-end -N 0 --np 0 ')
         parser.add_argument('--min_reads_to_use_region',  type=float, help='Minimum number of reads that align to a region to perform the CRISPResso analysis', default=1000)
     
         #general CRISPResso optional
@@ -280,7 +282,9 @@ def main():
         parser.add_argument('--needle_options_string',type=str,help='Override options for the Needle aligner',default=' -gapopen=10 -gapextend=0.5  -awidth3=5000')
         parser.add_argument('--keep_intermediate',help='Keep all the  intermediate files',action='store_true')
         parser.add_argument('--realign',help='Realign needle alignment if cutsite contains repetitive regions, such that indels are observed closer to cutsite',action='store_true')
-        parser.add_argument('--vmax',type=float,nargs=3,default=[None,None,None],help='Max value for colorbar of heatmaps. List 3 floats separated by spaces.(i.e. 0.5 0.05 0.1). The first is max for deletion heatmap, second insertions heatmap, and third substitutions heatmap. \'0\' in place of a float signifies use auto vmaxes.')
+        parser.add_argument('--vmax',type=float,nargs=3,default=[None,None,None],help='Max value for colorbar of heatmaps. \
+        List 3 floats separated by spaces.(i.e. 0.5 0.05 0.1), for deletions,insertions,\
+        and substitutions heatmaps respectively. \'0\' in place of a float signifies use auto vmaxes.')
         parser.add_argument('--dump',help='Dump numpy arrays and pandas dataframes to file for debugging purposes',action='store_true')
         parser.add_argument('--save_also_png',help='Save also .png images additionally to .pdf files',action='store_true')
         
@@ -928,14 +932,14 @@ def main():
                     indel_summary[i] = indel_summary[i].fillna(0.)
                     fig = plt.figure(i)
                     indels = indel_summary[i]
-                    vmax = int(args.vmax[i])
-                    if not vmax:
+                    vmax = args.vmax[i]
+                    if vmax==0.0:
                         vmax = None
-                    ax = plt.pcolormesh(indels.values,vmin=0,vmax=vmax,cmap="Reds")
+                    ax = plt.pcolormesh(indels.values,vmin=0,vmax=vmax,cmap="inferno")
                     plt.ylabel(indels.index.name)
                     plt.xlabel('Target')
                     plt.title(indels.index.name+" Profile")
-                    plt.xticks(np.arange(0.5,len(indels.columns),1),indels.columns)
+                    plt.xticks(np.arange(0.5,len(indels.columns),1),indels.columns, rotation=30, ha='right')
                     plt.ylim([0,max(indels.index.values)])
                     plt.yticks(np.arange(0.5,len(indels.index),1),indels.index)
                     mi,ma = ax.get_clim()
@@ -948,6 +952,7 @@ def main():
 
                     cbar = fig.colorbar(ax,format=ticker.FuncFormatter(lambda x,_:'{:.2%}'.format(x)))
                     cbar.set_label("Percent of Reads")
+                    plt.tight_layout()
                     plt.savefig(_jp('%s_heatmap.pdf' % indels.index.name))
             
         df_summary_quantification=pd.DataFrame(quantification_summary,columns=['Name','Unmodified%','NHEJ%','HDR%', 'Mixed_HDR-NHEJ%','Reads_aligned','Reads_total'])        
