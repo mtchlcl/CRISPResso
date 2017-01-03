@@ -198,7 +198,6 @@ matplotlib.rc('font', **font)
 matplotlib.use('Agg')
 
 plt=check_library('pylab')
-plt.style.use('ggplot')
 
 
 pd=check_library('pandas')
@@ -256,19 +255,9 @@ class NoReadsAfterQualityFiltering(Exception):
 
 #########################################
 
-def realign(row,ref_last=0):
-    ref = row.ref_seq
-    seq = row.align_seq
-    if ref_last:
-        ref = row.align_seq
-        seq = row.ref_seq
-    ref_pos = row.ref_positions
-    aln_str = row.align_str
-    cutsites = [np.nonzero(ref_pos==idx)[0][0] for idx in CUTSITES]
-    # find locations of deletions
-    dels = [match.span() for match in re.finditer('-+',seq)]
-    seq_list = list(seq)
-    aln_str = list(aln_str)
+def realign(dels,cutsites,ref_seq,align_seq):
+    seq_list = list(align_seq)
+    new_dels = []
     for cutsite in cutsites:
         # filter out deletion far away from cutsite
         cdist,start,end = float("inf"),None,None
@@ -282,26 +271,19 @@ def realign(row,ref_last=0):
             continue
         # if possible try to move indel immediately 5' of cutsite
         if (start > cutsite or end > cutsite):
-            while seq_list[start-1] == ref[end] and end >= cutsite:
+            while seq_list[start-1] == ref_seq[end] and end > cutsite:
                 seq_list[end],seq_list[start-1]  = seq_list[start-1],seq_list[end]
-                aln_str[end],aln_str[start-1] = aln_str[start-1],aln_str[end]    
                 end -= 1
                 start -= 1
             
         elif end < cutsite:
-            while ref[start] == seq_list[end+1] and end < cutsite:
+            while ref_seq[start] == seq_list[end+1] and end < cutsite:
                 seq_list[start],seq_list[end+1] = seq_list[end+1],seq_list[start]
-                aln_str[start],aln_str[end+1] = aln_str[end+1],aln_str[start]
                 start += 1
                 end += 1
+        new_dels.append((start,end+1))
     new_seq = ''.join(seq_list)
-    row['align_str'] = ''.join(aln_str)
-    if ref_last:
-        row['ref_seq'] = new_seq
-    else:
-        row['align_seq'] = new_seq
-        
-    return row
+    return new_seq,new_dels
 
 def process_df_chunk(df_needle_alignment_chunk):
      
@@ -369,12 +351,15 @@ def process_df_chunk(df_needle_alignment_chunk):
                  deletion_positions=[]
                  deletion_positions_flat=[]
                  deletion_sizes=[]
-                 
+                 if args.realign:
+                     cutsites = [np.nonzero(row.ref_positions==idx)[0][0] - 1 for idx in CUTSITES]
                  if not args.ignore_deletions:
-                     for p in re_find_indels.finditer(row.align_seq):
-                         st,en=p.span()
-                         deletion_positions.append(row.ref_positions[st:en])
-                         deletion_sizes.append(en-st)
+                     dels = [p.span() for p in re_find_indels.finditer(row.align_seq)]
+                     if args.realign: # this isn't kosher
+                         new_align,dels = realign(dels,cutsites,row.ref_seq,row.align_seq)
+                         df_needle_alignment_chunk.ix[idx_row,'align_seq'] = new_align
+                     deletion_positions += [row.ref_positions[start:end] for start,end in dels]
+                     deletion_sizes += [end-start for start,end in dels]
              
                      if deletion_positions:
                          deletion_positions_flat=np.hstack(deletion_positions)
@@ -384,13 +369,12 @@ def process_df_chunk(df_needle_alignment_chunk):
                  insertion_sizes=[]
                  
                  if not args.ignore_insertions:
-                     for p in re_find_indels.finditer(row.ref_seq):
-                         st,en=p.span()
-                         ref_st=row.ref_positions[st-1] # we report the base preceding the insertion
-                            
-                         insertion_positions.append(ref_st)
-                         insertion_sizes.append(en-st)
-
+                     ins = [p.span() for p in re_find_indels.finditer(row.ref_seq)]
+                     if args.realign:
+                         new_align,ins = realign(ins,cutsites,row.align_seq,row.ref_seq)
+                         df_needle_alignment_chunk.ix[idx_row,'ref_seq'] = new_align
+                     insertion_positions += [start-1 for start,end in ins]
+                     insertion_sizes += [end-start for start,end in ins] # we report the base preceding the insertion
                      
                  ########CLASSIFY READ 
                  #WE HAVE THE DONOR SEQUENCE
@@ -624,7 +608,7 @@ def main():
              parser.add_argument('--ignore_insertions',help='Ignore insertions events for the quantification and visualization',action='store_true')  
              parser.add_argument('--ignore_deletions',help='Ignore deletions events for the quantification and visualization',action='store_true')  
              parser.add_argument('--needle_options_string',type=str,help='Override options for the Needle aligner',default='-gapopen=10 -gapextend=0.5  -awidth3=5000')
-             parser.add_argument('--realign',help='Realign needle alignment if cutsite contains repetitive regions, such that indels are observed closer to cutsite',action='store_true')
+             parser.add_argument('--realign',help='Realign needle alignment if cutsite contains homopolymeric sequence, which could potentially yield multiple alignments.',action='store_true')
              parser.add_argument('--keep_intermediate',help='Keep all the  intermediate files',action='store_true')
              parser.add_argument('--dump',help='Dump numpy arrays and pandas dataframes to file for debugging purposes',action='store_true')
              parser.add_argument('--save_also_png',help='Save also .png images additionally to .pdf files',action='store_true')
@@ -1196,16 +1180,10 @@ def main():
     
              #compute positions relative to alignmnet
              df_needle_alignment['ref_positions']=df_needle_alignment['ref_seq'].apply(compute_ref_positions)
-             if args.realign and args.guide_seq:
-                 if not args.ignore_insertions:
-                     df_needle_alignment = df_needle_alignment.apply(realign,axis=1,args=(1,))
-                     df_needle_alignment['ref_positions']=df_needle_alignment['ref_seq'].apply(compute_ref_positions)
-                 if not args.ignore_deletions:
-                     df_needle_alignment = df_needle_alignment.apply(realign,axis=1)
              
              #INITIALIZATIONS            
-             re_find_indels=re.compile("(-*-)")
-             re_find_substitutions=re.compile("(\.*\.)")
+             #re_find_indels=re.compile("(-*-)")
+             #re_find_substitutions=re.compile("(\.*\.)")
              
              effect_vector_insertion=np.zeros(len_amplicon)
              effect_vector_deletion=np.zeros(len_amplicon)
